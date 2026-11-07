@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import json
 import asyncio
@@ -23,7 +24,7 @@ from credentials import API_ID, API_HASH, BOT_USERNAME
 CONFIG_FILE = 'config.json'
 
 # --- 1.2 CONFIGURACIÓN DE LA APP Y ACTUALIZACIONES ---
-APP_VERSION = "0.1"
+APP_VERSION = "0.1.1"
 
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/victoraragon26/lmu-setups-pro-manager/main/version.json"
 GITHUB_RELEASES_URL = "https://github.com/victoraragon26/lmu-setups-pro-manager/releases"
@@ -112,6 +113,15 @@ class LMUApp(ctk.CTk):
         self.ruta_destino = ""
         self.bot_is_running = False
 
+        # Icono de la aplicación
+        if getattr(sys, "frozen", False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        ruta_icono = os.path.join(base_path, "LMU_Setups_Pro_Manager.ico")
+        self.iconbitmap(ruta_icono)
+
         self.ultimo_texto_menu = None
         self.subcarpeta_circuito = ""
         self.descarga_en_curso = False
@@ -119,7 +129,14 @@ class LMUApp(ctk.CTk):
         self.meta_db = {}
         self.app_lo_silencio = False
 
-        self.client = TelegramClient('mi_sesion_lmu', API_ID, API_HASH)
+        # self.client = TelegramClient('mi_sesion_lmu', API_ID, API_HASH)
+
+        carpeta_sesion = os.path.join(os.getenv("APPDATA"), "LMU Setups Pro Manager")
+        os.makedirs(carpeta_sesion, exist_ok=True)
+
+        ruta_sesion = os.path.join(carpeta_sesion, "mi_sesion_lmu")
+
+        self.client = TelegramClient(ruta_sesion, API_ID, API_HASH)
 
         self.loop = asyncio.new_event_loop()
         self.t_thread = threading.Thread(target=self.start_async_loop, daemon=True)
@@ -600,7 +617,7 @@ class LMUApp(ctk.CTk):
         self.subcarpeta_circuito = ""
         self.after(0, lambda: self.btn_iniciar.configure(text="Desconectar", fg_color="red", state="normal"))
 
-        self.log("Pausa de seguridad (2 seg)...")
+        # self.log("Pausa de seguridad (2 seg)...")
         await asyncio.sleep(2)
 
         try:
@@ -615,7 +632,7 @@ class LMUApp(ctk.CTk):
                         ya_silenciado = True
 
                 if not ya_silenciado:
-                    self.log("🔕 Silenciando notificaciones del bot durante la sesión...")
+                    # self.log("🔕 Silenciando notificaciones del bot durante la sesión...")
                     await self.client(UpdateNotifySettingsRequest(
                         peer=BOT_USERNAME,
                         settings=InputPeerNotifySettings(mute_until=2147483647)
