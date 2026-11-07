@@ -21,10 +21,20 @@ from telethon.tl.types import InputPeerNotifySettings, InputNotifyPeer
 # --- 1. CONFIGURACIÓN ---
 from credentials import API_ID, API_HASH, BOT_USERNAME
 
-CONFIG_FILE = 'config.json'
+# CONFIG_FILE = 'config.json'
+
+# Carpeta de datos de la aplicación
+CARPETA_APP = os.path.join(
+    os.getenv("APPDATA"),
+    "LMU Setups Pro Manager"
+)
+
+os.makedirs(CARPETA_APP, exist_ok=True)
+
+CONFIG_FILE = os.path.join(CARPETA_APP, "config.json")
 
 # --- 1.2 CONFIGURACIÓN DE LA APP Y ACTUALIZACIONES ---
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/victoraragon26/lmu-setups-pro-manager/main/version.json"
 GITHUB_RELEASES_URL = "https://github.com/victoraragon26/lmu-setups-pro-manager/releases"
@@ -130,12 +140,7 @@ class LMUApp(ctk.CTk):
         self.app_lo_silencio = False
 
         # self.client = TelegramClient('mi_sesion_lmu', API_ID, API_HASH)
-
-        carpeta_sesion = os.path.join(os.getenv("APPDATA"), "LMU Setups Pro Manager")
-        os.makedirs(carpeta_sesion, exist_ok=True)
-
-        ruta_sesion = os.path.join(carpeta_sesion, "mi_sesion_lmu")
-
+        ruta_sesion = os.path.join(CARPETA_APP, "mi_sesion_lmu")
         self.client = TelegramClient(ruta_sesion, API_ID, API_HASH)
 
         self.loop = asyncio.new_event_loop()
