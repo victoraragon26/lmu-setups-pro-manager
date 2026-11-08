@@ -18,10 +18,13 @@ from telethon.tl.functions.account import UpdateNotifySettingsRequest, GetNotify
 # noinspection PyUnresolvedReferences
 from telethon.tl.types import InputPeerNotifySettings, InputNotifyPeer
 
+# --- IMPORTS DE NUESTROS MÓDULOS EXTERNOS (ARQUITECTURA LIMPIA) ---
+from lmu_cars import normalizar_coche_texto
+from lmu_tracks import obtener_carpeta_circuito
+from lmu_parser import extraer_version_archivo, extraer_creador_fallback
+
 # --- 1. CONFIGURACIÓN ---
 from credentials import API_ID, API_HASH, BOT_USERNAME
-
-# CONFIG_FILE = 'config.json'
 
 # Carpeta de datos de la aplicación
 CARPETA_APP = os.path.join(
@@ -34,13 +37,22 @@ os.makedirs(CARPETA_APP, exist_ok=True)
 CONFIG_FILE = os.path.join(CARPETA_APP, "config.json")
 
 # --- 1.2 CONFIGURACIÓN DE LA APP Y ACTUALIZACIONES ---
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/victoraragon26/lmu-setups-pro-manager/main/version.json"
 GITHUB_RELEASES_URL = "https://github.com/victoraragon26/lmu-setups-pro-manager/releases"
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+
+# Función auxiliar para encontrar recursos (Icono) tanto en local como en el .exe
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 
 # --- 2. VENTANA DE AVISO MODERNA (CUSTOM) ---
@@ -117,20 +129,17 @@ class LMUApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # Añadida la versión al título de la ventana
         self.title(f"LMU Setups Pro Manager (v{APP_VERSION})")
         self.geometry("800x850")
         self.ruta_destino = ""
         self.bot_is_running = False
 
-        # Icono de la aplicación
-        if getattr(sys, "frozen", False):
-            base_path = sys._MEIPASS
-        else:
-            base_path = os.path.dirname(os.path.abspath(__file__))
-
-        ruta_icono = os.path.join(base_path, "LMU_Setups_Pro_Manager.ico")
-        self.iconbitmap(ruta_icono)
+        try:
+            icon_path = resource_path("LMU_Setups_Pro_Manager.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            pass
 
         self.ultimo_texto_menu = None
         self.subcarpeta_circuito = ""
@@ -139,7 +148,6 @@ class LMUApp(ctk.CTk):
         self.meta_db = {}
         self.app_lo_silencio = False
 
-        # self.client = TelegramClient('mi_sesion_lmu', API_ID, API_HASH)
         ruta_sesion = os.path.join(CARPETA_APP, "mi_sesion_lmu")
         self.client = TelegramClient(ruta_sesion, API_ID, API_HASH)
 
@@ -194,16 +202,16 @@ class LMUApp(ctk.CTk):
         self.btn_refresh = ctk.CTkButton(self.top_gestor, text="🔄", command=self.actualizar_lista_circuitos, width=40)
         self.btn_refresh.pack(side="left", padx=2)
 
-        self.combo_circuitos = ctk.CTkOptionMenu(self.top_gestor, values=["Circuito..."],
-                                                 command=self.cargar_setups_circuito, width=150)
+        self.combo_circuitos = ctk.CTkOptionMenu(self.top_gestor, values=["Todos los circuitos"],
+                                                 command=self.aplicar_filtros_dinamicos, width=150)
         self.combo_circuitos.pack(side="left", padx=2)
 
         self.combo_coches = ctk.CTkOptionMenu(self.top_gestor, values=["Todos los coches"],
-                                              command=self.filtrar_lista_setups, width=170)
+                                              command=self.aplicar_filtros_dinamicos, width=170)
         self.combo_coches.pack(side="left", padx=2)
 
         self.combo_creadores = ctk.CTkOptionMenu(self.top_gestor, values=["Todos los creadores"],
-                                                 command=self.filtrar_lista_setups, width=170)
+                                                 command=self.aplicar_filtros_dinamicos, width=170)
         self.combo_creadores.pack(side="left", padx=2)
 
         self.btn_eliminar = ctk.CTkButton(self.top_gestor, text="🗑️", fg_color="#d9534f", hover_color="#c9302c",
@@ -226,39 +234,30 @@ class LMUApp(ctk.CTk):
         self.client.add_event_handler(self.handler_mensajes, events.MessageEdited(chats=BOT_USERNAME))
 
         self.cargar_ruta_guardada()
-
-        # Iniciar verificación de actualizaciones 2 segundos después de abrir la app
         self.after(2000, self.verificar_actualizaciones)
 
-    # --- NUEVO: SISTEMA DE VERIFICACIÓN DE ACTUALIZACIONES ---
+    # --- SISTEMA DE VERIFICACIÓN DE ACTUALIZACIONES ---
     def verificar_actualizaciones(self):
         def check():
             try:
-                # Omitimos si no se ha configurado el repositorio real aún
-                if "TU_USUARIO" in GITHUB_VERSION_URL:
-                    return
-
+                if "TU_USUARIO" in GITHUB_VERSION_URL: return
                 req = urllib.request.Request(GITHUB_VERSION_URL, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = json.loads(response.read().decode())
                     version_remota = data.get("version", APP_VERSION)
                     url_descarga = data.get("url", GITHUB_RELEASES_URL)
-
-                    # Si la versión remota es mayor a la actual
                     if version_remota > APP_VERSION:
                         self.after(0, lambda: self.mostrar_aviso_actualizacion(version_remota, url_descarga))
             except Exception:
-                pass  # Si no hay internet o falla el link, falla silenciosamente sin molestar
+                pass
 
         threading.Thread(target=check, daemon=True).start()
 
     def mostrar_aviso_actualizacion(self, version_remota, url_descarga):
-        res = ModernDialog(self,
-                           "¡Actualización Disponible!",
+        res = ModernDialog(self, "¡Actualización Disponible!",
                            f"Estás usando la versión v{APP_VERSION} y la nueva v{version_remota} ya está disponible.\n\n¿Quieres abrir la página de descargas?",
                            is_warning=False).get_input()
-        if res:
-            webbrowser.open(url_descarga)
+        if res: webbrowser.open(url_descarga)
 
     # --- FUNCIONES BÁSICAS Y HERRAMIENTAS ---
     def start_async_loop(self):
@@ -291,59 +290,32 @@ class LMUApp(ctk.CTk):
         if getattr(self, 'app_lo_silencio', False):
             try:
                 await self.client(UpdateNotifySettingsRequest(
-                    peer=BOT_USERNAME,
-                    settings=InputPeerNotifySettings(mute_until=0)
+                    peer=BOT_USERNAME, settings=InputPeerNotifySettings(mute_until=0)
                 ))
             except Exception:
                 pass
-
-        if self.client.is_connected():
-            await self.client.disconnect()
-
+        if self.client.is_connected(): await self.client.disconnect()
         self.after(0, self.destroy)
         os._exit(0)
 
-    # --- TRADUCTOR MAESTRO DE COCHES ---
+    # --- FUNCIONES DE CLASIFICACIÓN USANDO MÓDULOS EXTERNOS ---
     def normalizar_coche(self, nombre_sucio):
-        if not nombre_sucio:
-            return "Otros"
+        return normalizar_coche_texto(nombre_sucio)
 
-        n = str(nombre_sucio).strip().lower()
-        n = n.replace("_", " ")
-
-        if any(c in n for c in ["m4", "bmw"]): return "BMW M4 GT3"
-        if any(c in n for c in ["rcf", "lexus", "rc f"]): return "Lexus RC F GT3"
-        if any(c in n for c in ["mustang", "mus"]): return "Ford Mustang GT3"
-        if any(c in n for c in ["aston", "vantage", "amr"]): return "Aston Martin Vantage GT3"
-        if any(c in n for c in ["corvette", "c8"]): return "Corvette Z06 GT3.R"
-        if any(c in n for c in ["ferrari", "296"]): return "Ferrari 296 GT3"
-        if any(c in n for c in ["mclaren", "720"]): return "McLaren 720S GT3 Evo"
-        if any(c in n for c in ["porsche", "992", "911"]): return "Porsche 911 GT3 R (992)"
-
-        if "499p" in n: return "Ferrari 499P"
-        if "963" in n: return "Porsche 963"
-        if "v-series" in n or "cadillac" in n: return "Cadillac V-Series.R"
-        if "gr010" in n or "toyota" in n: return "Toyota GR010 Hybrid"
-        if "peugeot" in n or "9x8" in n: return "Peugeot 9X8"
-
-        if "lmp2" in n or "07" in n: return "Oreca 07 LMP2"
-
-        return str(nombre_sucio).strip().title()
+    def extraer_coche_fallback(self, filename):
+        nombre = filename.replace(".svm", "").replace(".json", "")
+        return normalizar_coche_texto(nombre)
 
     def restaurar_pantalla_inicio(self):
         self.btn_iniciar.configure(text="Conectar al Bot", fg_color="green", state="normal")
         self.tabview.set("📥 Descargas")
-
-        for widget in self.frame_bot_pantalla.winfo_children():
-            widget.destroy()
+        for widget in self.frame_bot_pantalla.winfo_children(): widget.destroy()
 
         texto_lbl = "Selecciona tu carpeta y conecta para empezar..."
         color_lbl = "gray"
-
         if self.ruta_destino and os.path.exists(self.ruta_destino):
             texto_lbl = "Carpeta cargada correctamente.\n\nPulsa 'Conectar al Bot' para empezar."
             color_lbl = "#2ecc71"
-
         self.label_info = ctk.CTkLabel(self.frame_bot_pantalla, text=texto_lbl, text_color=color_lbl,
                                        font=("Arial", 14))
         self.label_info.pack(pady=40)
@@ -356,91 +328,33 @@ class LMUApp(ctk.CTk):
                     self.ruta_destino = config['ruta_setups']
                     texto_ruta = ".../" + "/".join(self.ruta_destino.replace("\\", "/").split("/")[-4:])
                     self.label_ruta.configure(text=texto_ruta)
-
                     self.label_info.configure(
                         text="Carpeta cargada correctamente.\n\nPulsa 'Conectar al Bot' para empezar.",
                         text_color="#2ecc71")
-                    self.log(f"Ruta cargada. Ve al Gestor para ver tus setups.")
+                    self.log("Ruta cargada. Ve al Gestor para ver tus setups.")
                     self.actualizar_lista_circuitos()
 
     def seleccionar_carpeta(self):
         ruta_base = filedialog.askdirectory(title="Selecciona la raíz de Le Mans Ultimate")
         if ruta_base:
-            if "UserData" in ruta_base:
-                ruta_final = ruta_base
-            else:
-                ruta_final = os.path.join(ruta_base, "UserData", "player", "Settings")
-
+            ruta_final = ruta_base if "UserData" in ruta_base else os.path.join(ruta_base, "UserData", "player",
+                                                                                "Settings")
             if not os.path.exists(ruta_final):
                 self.log(f"⚠️ Atención: La carpeta {ruta_final} no existe en este directorio.")
                 return
-
             self.ruta_destino = ruta_final
             texto_ruta = ".../" + "/".join(self.ruta_destino.replace("\\", "/").split("/")[-4:])
             self.label_ruta.configure(text=texto_ruta)
-
             self.label_info.configure(text="Carpeta cargada correctamente.\n\nPulsa 'Conectar al Bot' para empezar.",
                                       text_color="#2ecc71")
             with open(CONFIG_FILE, 'w') as f:
                 json.dump({'ruta_setups': ruta_final}, f)
-            self.log(f"Ruta configurada. Ve al Gestor para ver tus setups.")
+            self.log("Ruta configurada. Ve al Gestor para ver tus setups.")
             self.actualizar_lista_circuitos()
 
-    # --- LÓGICA DEL GESTOR DE SETUPS Y LECTOR DE VERSIONES DE ARCHIVOS ---
-    def extraer_version_archivo(self, filename, creador):
-        v_tuple = None
-        if creador in ["HYMO", "HYMO2"]:
-            m = re.search(rf'{creador}\s+v?(\d+(?:\.\d+)*)', filename, re.IGNORECASE)
-            if m: v_tuple = tuple(map(int, m.group(1).split('.')))
-        elif creador == "GO":
-            m = re.search(r'GO\s+v?(\d+(?:\.\d+)*)', filename, re.IGNORECASE)
-            if m: v_tuple = tuple(map(int, m.group(1).split('.')))
-        elif creador == "Bober":
-            m = re.search(r'Bober\s+v?(\d+(?:\.\d+)*)(?:.*v(\d+))?', filename, re.IGNORECASE)
-            if m:
-                base = list(map(int, m.group(1).split('.')))
-                sub = [int(m.group(2))] if m.group(2) else [0]
-                v_tuple = tuple(base + sub)
-        elif creador == "P1Doks":
-            m = re.search(r'(?:_|\s)v?(\d+(?:\.\d+)*)(?:_?v(\d+))?(?:\.svm|\.json)?\s*$', filename, re.IGNORECASE)
-            if m:
-                base = list(map(int, m.group(1).split('.')))
-                sub = [int(m.group(2))] if m.group(2) else [0]
-                v_tuple = tuple(base + sub)
-        return v_tuple
-
-    def extraer_coche_fallback(self, filename):
-        nombre = filename.replace(".svm", "").replace(".json", "")
-        return self.normalizar_coche(nombre)
-
-    def extraer_creador_fallback(self, filename):
-        if filename.startswith("P1Doks"): return "P1Doks"
-        if filename.startswith("CDA"): return "CDA"
-        if filename.startswith("Bober"): return "Bober"
-        if filename.startswith("GO"): return "GO"
-        if filename.startswith("HYMO2"): return "HYMO2"
-        if filename.startswith("HYMO"): return "HYMO"
-        return "Otros"
-
+    # --- LÓGICA DEL GESTOR DE SETUPS Y CACHÉ DINÁMICA ---
     def actualizar_lista_circuitos(self):
         if not self.ruta_destino or not os.path.exists(self.ruta_destino): return
-        carpetas = [d for d in os.listdir(self.ruta_destino) if os.path.isdir(os.path.join(self.ruta_destino, d))]
-        if carpetas:
-            carpetas.sort()
-            self.combo_circuitos.configure(values=carpetas)
-            self.combo_circuitos.set(carpetas[0])
-            self.cargar_setups_circuito(carpetas[0])
-        else:
-            self.combo_circuitos.configure(values=["Sin carpetas"])
-            self.combo_circuitos.set("Sin carpetas")
-
-    def cargar_setups_circuito(self, circuito):
-        if circuito in ["Circuito...", "Sin carpetas"]: return
-        ruta_circuito = os.path.join(self.ruta_destino, circuito)
-        if not os.path.exists(ruta_circuito): return
-
-        archivos = [f for f in os.listdir(ruta_circuito) if
-                    os.path.isfile(os.path.join(ruta_circuito, f)) and f.endswith(('.json', '.svm'))]
 
         meta_file = os.path.join(self.ruta_destino, "lmu_setups_db.json")
         self.meta_db = {}
@@ -451,75 +365,95 @@ class LMUApp(ctk.CTk):
             except:
                 pass
 
-        coches_encontrados = set()
-        creadores_encontrados = set()
+        self.setups_cache = []
+        carpetas_brutas = [d for d in os.listdir(self.ruta_destino) if
+                           os.path.isdir(os.path.join(self.ruta_destino, d))]
+        carpetas = [d for d in carpetas_brutas if "sala de exposici" not in d.lower()]
 
-        for f in archivos:
-            meta = self.meta_db.get(f, {})
-            coche_bd = meta.get("coche")
-            coche_normalizado = self.normalizar_coche(coche_bd) if coche_bd else self.extraer_coche_fallback(f)
-            creador = meta.get("creador") or self.extraer_creador_fallback(f)
+        for c in carpetas:
+            ruta_c = os.path.join(self.ruta_destino, c)
+            archivos = [f for f in os.listdir(ruta_c) if
+                        os.path.isfile(os.path.join(ruta_c, f)) and f.endswith(('.json', '.svm'))]
 
-            coches_encontrados.add(coche_normalizado)
-            creadores_encontrados.add(creador)
+            for arch in archivos:
+                meta = self.meta_db.get(arch, {})
+                coche_bd = meta.get("coche")
+                coche_norm = normalizar_coche_texto(coche_bd) if coche_bd else self.extraer_coche_fallback(arch)
+                creador_norm = meta.get("creador") or extraer_creador_fallback(arch)
 
-        self.combo_coches.configure(values=["Todos los coches"] + sorted(list(coches_encontrados)))
-        self.combo_coches.set("Todos los coches")
+                self.setups_cache.append({
+                    "archivo": arch,
+                    "ruta": os.path.join(ruta_c, arch),
+                    "circuito": c,
+                    "coche": coche_norm,
+                    "creador": creador_norm
+                })
 
-        self.combo_creadores.configure(values=["Todos los creadores"] + sorted(list(creadores_encontrados)))
-        self.combo_creadores.set("Todos los creadores")
+        if not hasattr(self, 'filtros_inicializados'):
+            self.combo_circuitos.set("Todos los circuitos")
+            self.combo_coches.set("Todos los coches")
+            self.combo_creadores.set("Todos los creadores")
+            self.filtros_inicializados = True
 
-        self.filtrar_lista_setups()
+        self.aplicar_filtros_dinamicos()
 
-    def filtrar_lista_setups(self, event=None):
-        for widget in self.frame_lista_setups.winfo_children():
-            widget.destroy()
+    def aplicar_filtros_dinamicos(self, event=None):
+        if not hasattr(self, 'setups_cache'): return
+
+        sel_circ = self.combo_circuitos.get()
+        sel_coche = self.combo_coches.get()
+        sel_creador = self.combo_creadores.get()
+
+        circuitos_validos = set()
+        coches_validos = set()
+        creadores_validos = set()
+        archivos_a_mostrar = []
+
+        for s in self.setups_cache:
+            match_circ = (sel_circ == "Todos los circuitos" or s["circuito"] == sel_circ)
+            match_coche = (sel_coche == "Todos los coches" or s["coche"] == sel_coche)
+            match_creador = (sel_creador == "Todos los creadores" or s["creador"] == sel_creador)
+
+            if match_coche and match_creador: circuitos_validos.add(s["circuito"])
+            if match_circ and match_creador: coches_validos.add(s["coche"])
+            if match_circ and match_coche: creadores_validos.add(s["creador"])
+
+            if match_circ and match_coche and match_creador: archivos_a_mostrar.append(s)
+
+        lista_circ = ["Todos los circuitos"] + sorted(list(circuitos_validos))
+        lista_coches = ["Todos los coches"] + sorted(list(coches_validos))
+        lista_creadores = ["Todos los creadores"] + sorted(list(creadores_validos))
+
+        self.combo_circuitos.configure(values=lista_circ)
+        self.combo_coches.configure(values=lista_coches)
+        self.combo_creadores.configure(values=lista_creadores)
+
+        if sel_circ not in lista_circ: self.combo_circuitos.set("Todos los circuitos")
+        if sel_coche not in lista_coches: self.combo_coches.set("Todos los coches")
+        if sel_creador not in lista_creadores: self.combo_creadores.set("Todos los creadores")
+
+        for widget in self.frame_lista_setups.winfo_children(): widget.destroy()
         self.checkboxes_setups.clear()
         self.btn_seleccionar_todos.configure(text="☑️ Marcar")
 
-        circuito = self.combo_circuitos.get()
-        c_coche = self.combo_coches.get()
-        c_creador = self.combo_creadores.get()
-
-        if circuito in ["Circuito...", "Sin carpetas"]: return
-        ruta_circuito = os.path.join(self.ruta_destino, circuito)
-        if not os.path.exists(ruta_circuito): return
-
-        archivos = [f for f in os.listdir(ruta_circuito) if
-                    os.path.isfile(os.path.join(ruta_circuito, f)) and f.endswith(('.json', '.svm'))]
-
-        archivos_filtrados = []
-        for arch in archivos:
-            meta = self.meta_db.get(arch, {})
-            coche_bd = meta.get("coche")
-            coche_normalizado = self.normalizar_coche(coche_bd) if coche_bd else self.extraer_coche_fallback(arch)
-            creador = meta.get("creador") or self.extraer_creador_fallback(arch)
-
-            if (c_coche == "Todos los coches" or coche_normalizado == c_coche) and (
-                    c_creador == "Todos los creadores" or creador == c_creador):
-                archivos_filtrados.append(arch)
-
-        if not archivos_filtrados:
+        if not archivos_a_mostrar:
             ctk.CTkLabel(self.frame_lista_setups, text="No hay setups que coincidan con los filtros.",
                          text_color="gray").pack(pady=20)
             return
 
-        archivos_filtrados.sort()
-        for arch in archivos_filtrados:
-            chk = ctk.CTkCheckBox(self.frame_lista_setups, text=arch, font=("Arial", 13))
+        archivos_a_mostrar.sort(key=lambda x: x["archivo"])
+        for s in archivos_a_mostrar:
+            texto_chk = f"[{s['circuito']}] {s['archivo']}" if self.combo_circuitos.get() == "Todos los circuitos" else \
+            s["archivo"]
+            chk = ctk.CTkCheckBox(self.frame_lista_setups, text=texto_chk, font=("Arial", 13))
             chk.pack(anchor="w", pady=6, padx=10)
-            self.checkboxes_setups.append((chk, os.path.join(ruta_circuito, arch)))
+            self.checkboxes_setups.append((chk, s["ruta"]))
 
     def toggle_seleccionar_todos(self):
         if not self.checkboxes_setups: return
         todos_marcados = all(chk.get() == 1 for chk, _ in self.checkboxes_setups)
-
-        if todos_marcados:
-            for chk, _ in self.checkboxes_setups: chk.deselect()
-            self.btn_seleccionar_todos.configure(text="☑️ Marcar")
-        else:
-            for chk, _ in self.checkboxes_setups: chk.select()
-            self.btn_seleccionar_todos.configure(text="🔳 Desmarcar")
+        for chk, _ in self.checkboxes_setups: chk.deselect() if todos_marcados else chk.select()
+        self.btn_seleccionar_todos.configure(text="☑️ Marcar" if todos_marcados else "🔳 Desmarcar")
 
     def eliminar_setups(self):
         eliminados = 0
@@ -530,19 +464,16 @@ class LMUApp(ctk.CTk):
                     eliminados += 1
                 except Exception as e:
                     self.log(f"Error borrando {os.path.basename(ruta_archivo)}: {e}")
-
         if eliminados > 0:
             self.log(f"🗑️ Se han eliminado {eliminados} setups.")
-            self.cargar_setups_circuito(self.combo_circuitos.get())
+            self.actualizar_lista_circuitos()
 
     # --- FLUJO DE CONEXIÓN Y LOGIN ---
     def toggle_bot(self):
         if not self.ruta_destino:
             self.log("¡Error! Selecciona la carpeta LMU primero.")
             return
-
         self.tabview.set("📥 Descargas")
-
         if not self.bot_is_running:
             self.log("Conectando al servidor...")
             self.btn_iniciar.configure(state="disabled")
@@ -555,14 +486,11 @@ class LMUApp(ctk.CTk):
     async def desconectar_telegram(self):
         if getattr(self, 'app_lo_silencio', False):
             try:
-                await self.client(UpdateNotifySettingsRequest(
-                    peer=BOT_USERNAME,
-                    settings=InputPeerNotifySettings(mute_until=0)
-                ))
+                await self.client(
+                    UpdateNotifySettingsRequest(peer=BOT_USERNAME, settings=InputPeerNotifySettings(mute_until=0)))
             except Exception:
                 pass
             self.app_lo_silencio = False
-
         await self.client.disconnect()
         self.after(0, self.restaurar_pantalla_inicio)
 
@@ -621,27 +549,18 @@ class LMUApp(ctk.CTk):
         self.descarga_en_curso = False
         self.subcarpeta_circuito = ""
         self.after(0, lambda: self.btn_iniciar.configure(text="Desconectar", fg_color="red", state="normal"))
-
-        # self.log("Pausa de seguridad (2 seg)...")
         await asyncio.sleep(2)
 
         try:
             try:
                 peer = await self.client.get_input_entity(BOT_USERNAME)
                 actual_settings = await self.client(GetNotifySettingsRequest(peer=InputNotifyPeer(peer=peer)))
-
-                ya_silenciado = False
-                if getattr(actual_settings, 'mute_until', None):
-                    ahora = datetime.datetime.now(datetime.timezone.utc)
-                    if actual_settings.mute_until > ahora:
-                        ya_silenciado = True
-
+                ya_silenciado = getattr(actual_settings, 'mute_until',
+                                        None) and actual_settings.mute_until > datetime.datetime.now(
+                    datetime.timezone.utc)
                 if not ya_silenciado:
-                    # self.log("🔕 Silenciando notificaciones del bot durante la sesión...")
-                    await self.client(UpdateNotifySettingsRequest(
-                        peer=BOT_USERNAME,
-                        settings=InputPeerNotifySettings(mute_until=2147483647)
-                    ))
+                    await self.client(UpdateNotifySettingsRequest(peer=BOT_USERNAME, settings=InputPeerNotifySettings(
+                        mute_until=2147483647)))
                     self.app_lo_silencio = True
                 else:
                     self.app_lo_silencio = False
@@ -658,67 +577,21 @@ class LMUApp(ctk.CTk):
             self.after(0, self.restaurar_pantalla_inicio)
 
     # --- RENDERIZADO VISUAL DEL BOT Y LÓGICA INTELIGENTE ---
-    def obtener_carpeta_circuito(self, texto_pista):
-        pista_raw = texto_pista.strip().replace(":", "").lower()
-
-        mapa_circuitos = {
-            "silverstone (wec)": "Silverstonewec",
-            "silverstone nat": "Silverstone_National",
-            "silverstone int": "Silverstone_International",
-            "silverstone": "Silverstone",
-            "fuji cl": "Fuji_Cl",
-            "fuji": "Fuji",
-            "spa end": "Spa_Endce",
-            "spa": "Spa",
-            "algarve": "Portimao",
-            "barcelona": "Circuit De Barcelona",
-            "daytona": "Daytonarc",
-            "imola": "Imola",
-            "laguna seca": "Lagunaseca",
-            "long beach": "Longbeach",
-            "monza": "Monza",
-            "road atlanta": "Road Atlanta",
-            "bahrain": "Bahrain",
-            "cota": "Circuit Of The Americas",
-            "interlagos": "Interlagos",
-            "le mans": "Lemans",
-            "lusail": "Qatar",
-            "paul ricard": "Paulricard",
-            "sebring": "Sebring"
-        }
-
-        for clave_bot, carpeta_juego in mapa_circuitos.items():
-            if clave_bot in pista_raw:
-                return carpeta_juego
-        return ""
-
     def dibujar_interfaz_bot(self, texto_mensaje, botones_telegram):
-        if getattr(self, 'descarga_en_curso', False):
-            return
+        if getattr(self, 'descarga_en_curso', False): return
 
         texto_limpio = texto_mensaje.lower().replace("*", "")
         texto_sin_formato = texto_mensaje.replace("*", "")
 
         if "@" in texto_limpio:
             pista_raw = texto_limpio.split("@")[-1]
-            carpeta_detectada = self.obtener_carpeta_circuito(pista_raw)
-            if carpeta_detectada:
-                self.subcarpeta_circuito = carpeta_detectada
+            carpeta_detectada = obtener_carpeta_circuito(pista_raw)
+            if carpeta_detectada: self.subcarpeta_circuito = carpeta_detectada
 
         if "setups by" in texto_limpio and botones_telegram:
             creador_detectado = ""
-            if "setups by hymo2" in texto_limpio:
-                creador_detectado = "HYMO2"
-            elif "setups by hymo" in texto_limpio:
-                creador_detectado = "HYMO"
-            elif "setups by cda" in texto_limpio:
-                creador_detectado = "CDA"
-            elif "setups by p1doks" in texto_limpio:
-                creador_detectado = "P1Doks"
-            elif "setups by go" in texto_limpio:
-                creador_detectado = "GO"
-            elif "setups by bober" in texto_limpio:
-                creador_detectado = "Bober"
+            for c in ["HYMO2", "HYMO", "CDA", "P1Doks", "GO", "Bober"]:
+                if f"setups by {c.lower()}" in texto_limpio: creador_detectado = c; break
 
             if creador_detectado and getattr(self, 'ultimo_texto_menu', None) != texto_limpio:
                 self.ultimo_texto_menu = texto_limpio
@@ -730,9 +603,8 @@ class LMUApp(ctk.CTk):
                 if carpeta_final_esperada:
                     ruta_guardado_esperada = os.path.join(self.ruta_destino, carpeta_final_esperada)
                     if not os.path.exists(ruta_guardado_esperada):
-                        ModernDialog(self,
-                                     "Carpeta no encontrada",
-                                     f"La carpeta del circuito '{carpeta_final_esperada}' no existe en tu juego.\n\nPara que LMU la cree, entra al juego, carga cualquier coche en ese circuito y guarda un setup vacío. Luego vuelve a intentarlo.",
+                        ModernDialog(self, "Carpeta no encontrada",
+                                     f"La carpeta del circuito '{carpeta_final_esperada}' no existe en tu juego.\n\nGuarda un setup vacío en el juego primero.",
                                      is_warning=True).get_input()
                         self.ultimo_texto_menu = None
                         return
@@ -741,34 +613,9 @@ class LMUApp(ctk.CTk):
                     versiones = {}
                     for fila in botones_telegram:
                         for boton_tl in fila:
-                            texto_btn = boton_tl.text
-                            if "back" in texto_btn.lower() or "main menu" in texto_btn.lower(): continue
-
-                            v_tuple = None
-                            if creador_detectado in ["HYMO", "HYMO2"]:
-                                m = re.search(rf'{creador_detectado}\s+v?(\d+(?:\.\d+)*)', texto_btn, re.IGNORECASE)
-                                if m: v_tuple = tuple(map(int, m.group(1).split('.')))
-
-                            elif creador_detectado == "GO":
-                                m = re.search(r'GO\s+v?(\d+(?:\.\d+)*)', texto_btn, re.IGNORECASE)
-                                if m: v_tuple = tuple(map(int, m.group(1).split('.')))
-
-                            elif creador_detectado == "Bober":
-                                m = re.search(r'Bober\s+v?(\d+(?:\.\d+)*)(?:.*v(\d+))?', texto_btn, re.IGNORECASE)
-                                if m:
-                                    base = list(map(int, m.group(1).split('.')))
-                                    sub = [int(m.group(2))] if m.group(2) else [0]
-                                    v_tuple = tuple(base + sub)
-
-                            elif creador_detectado == "P1Doks":
-                                m = re.search(r'(?:_|\s)v?(\d+(?:\.\d+)*)(?:_?v(\d+))?\s*$', texto_btn, re.IGNORECASE)
-                                if m:
-                                    base = list(map(int, m.group(1).split('.')))
-                                    sub = [int(m.group(2))] if m.group(2) else [0]
-                                    v_tuple = tuple(base + sub)
-
-                            if v_tuple:
-                                versiones[boton_tl] = v_tuple
+                            if "back" in boton_tl.text.lower() or "main menu" in boton_tl.text.lower(): continue
+                            v_tuple = extraer_version_archivo(boton_tl.text, creador_detectado)
+                            if v_tuple: versiones[boton_tl] = v_tuple
 
                     if versiones:
                         max_version = max(versiones.values())
@@ -776,28 +623,20 @@ class LMUApp(ctk.CTk):
                         str_max_version = ".".join(map(str, max_version)).replace(".0", "")
                         info_version = f" (v{str_max_version})"
                     else:
-                        for fila in botones_telegram:
-                            for boton_tl in fila:
-                                texto_btn = boton_tl.text.lower()
-                                if "back" not in texto_btn and "main menu" not in texto_btn:
-                                    botones_a_descargar.append(boton_tl)
+                        botones_a_descargar = [b for fila in botones_telegram for b in fila if
+                                               "back" not in b.text.lower() and "main menu" not in b.text.lower()]
                         info_version = " (Todos)"
                 else:
-                    for fila in botones_telegram:
-                        for boton_tl in fila:
-                            texto_btn = boton_tl.text.lower()
-                            if "back" not in texto_btn and "main menu" not in texto_btn:
-                                botones_a_descargar.append(boton_tl)
+                    botones_a_descargar = [b for fila in botones_telegram for b in fila if
+                                           "back" not in b.text.lower() and "main menu" not in b.text.lower()]
                     info_version = " (Todos)"
 
-                coche_menu = None
                 m_coche = re.search(r'by\s+[^\-—]+\s*[-—]\s*(.+?)\s*@', texto_sin_formato, re.IGNORECASE)
-                if m_coche: coche_menu = m_coche.group(1).strip()
+                coche_menu = m_coche.group(1).strip() if m_coche else None
 
                 archivos_antiguos = []
                 archivos_actuales_exactos = []
                 descarga_omitida = False
-
                 nombres_botones_norm = [self.limpiar_texto(b.text) for b in botones_a_descargar]
 
                 if self.subcarpeta_circuito:
@@ -806,135 +645,100 @@ class LMUApp(ctk.CTk):
                         archivos_circuito = [f for f in os.listdir(ruta_circuito) if f.endswith(('.json', '.svm'))]
 
                         for f in archivos_circuito:
-                            base_archivo_norm = self.limpiar_texto(f.replace('.svm', '').replace('.json', ''))
-                            if base_archivo_norm in nombres_botones_norm:
+                            if self.limpiar_texto(f.replace('.svm', '').replace('.json', '')) in nombres_botones_norm:
                                 archivos_actuales_exactos.append(f)
                                 continue
 
                             if max_version and coche_menu:
                                 meta = self.meta_db.get(f, {})
-                                c_bruto = meta.get("coche") or self.extraer_coche_fallback(f)
-                                c = self.normalizar_coche(c_bruto)
-                                cr = meta.get("creador") or self.extraer_creador_fallback(f)
+                                c = normalizar_coche_texto(meta.get("coche") or self.extraer_coche_fallback(f))
+                                cr = meta.get("creador") or extraer_creador_fallback(f)
 
-                                if cr.lower() == creador_detectado.lower():
-                                    coche_menu_norm = self.normalizar_coche(coche_menu)
-                                    if coche_menu_norm.lower() == c.lower():
-                                        v_arch = self.extraer_version_archivo(f, creador_detectado)
-                                        if v_arch and v_arch < max_version:
-                                            archivos_antiguos.append(os.path.join(ruta_circuito, f))
+                                if cr.lower() == creador_detectado.lower() and normalizar_coche_texto(
+                                        coche_menu).lower() == c.lower():
+                                    v_arch = extraer_version_archivo(f, creador_detectado)
+                                    if v_arch and v_arch < max_version: archivos_antiguos.append(
+                                        os.path.join(ruta_circuito, f))
 
                         if archivos_actuales_exactos:
-                            res = ModernDialog(self,
-                                               "Setups ya descargados",
-                                               f"Ya tienes {len(archivos_actuales_exactos)} de estos setups en tu carpeta.\n\n¿Quieres omitir esta descarga para evitar duplicados?\n\n(Pulsa 'Sí' para cancelar descarga, 'No' para forzarla)",
+                            res = ModernDialog(self, "Setups ya descargados",
+                                               f"Ya tienes {len(archivos_actuales_exactos)} de estos setups en tu carpeta.\n\n¿Quieres omitir esta descarga para evitar duplicados?",
                                                is_warning=False).get_input()
-
                             if res:
-                                self.log(f"Omitida la descarga de {creador_detectado} (ya existía).")
+                                self.log(f"Omitida la descarga de {creador_detectado}.")
                                 descarga_omitida = True
 
                 if descarga_omitida:
-                    for widget in self.frame_bot_pantalla.winfo_children():
-                        widget.destroy()
-
-                    lbl_omitido = ctk.CTkLabel(self.frame_bot_pantalla,
-                                               text=f"⏭️ Descarga Omitida\n\nYa tienes los setups de {creador_detectado}{info_version}\n\nCircuito: {self.subcarpeta_circuito or 'Settings'}",
-                                               font=("Arial", 18, "bold"), text_color="#e67e22")
-                    lbl_omitido.pack(pady=(60, 20))
-
+                    for widget in self.frame_bot_pantalla.winfo_children(): widget.destroy()
+                    ctk.CTkLabel(self.frame_bot_pantalla,
+                                 text=f"⏭️ Descarga Omitida\n\nYa tienes los setups de {creador_detectado}{info_version}\n\nCircuito: {self.subcarpeta_circuito or 'Settings'}",
+                                 font=("Arial", 18, "bold"), text_color="#e67e22").pack(pady=(60, 20))
                     frame_nav = ctk.CTkFrame(self.frame_bot_pantalla, fg_color="transparent")
                     frame_nav.pack(pady=30)
-
                     for fila in botones_telegram:
                         for boton_tl in fila:
-                            texto_btn = boton_tl.text.lower()
-                            if "back" in texto_btn or "main menu" in texto_btn:
+                            if "back" in boton_tl.text.lower() or "main menu" in boton_tl.text.lower():
                                 def crear_comando(btn=boton_tl):
-                                    async def click_seguro():
-                                        self.ultimo_texto_menu = None
-                                        await asyncio.sleep(1.0)
-                                        await btn.click()
+                                    async def click_seguro(): self.ultimo_texto_menu = None; await asyncio.sleep(
+                                        1.0); await btn.click()
 
                                     return lambda: asyncio.run_coroutine_threadsafe(click_seguro(), self.loop)
 
-                                btn_ui = ctk.CTkButton(frame_nav, text=boton_tl.text, command=crear_comando(),
-                                                       width=150, height=40, corner_radius=8,
-                                                       fg_color="#4a4a4a", hover_color="#333333",
-                                                       font=("Arial", 13, "bold"))
-                                btn_ui.pack(side="left", padx=10)
+                                ctk.CTkButton(frame_nav, text=boton_tl.text, command=crear_comando(), width=150,
+                                              height=40, fg_color="#4a4a4a").pack(side="left", padx=10)
                     return
 
                 if botones_a_descargar and archivos_antiguos:
-                    res = ModernDialog(self,
-                                       "Setups antiguos detectados",
-                                       f"Se han encontrado {len(archivos_antiguos)} setups antiguos de {creador_detectado} para este coche.\n\n¿Deseas eliminarlos antes de descargar la nueva versión {info_version.strip()}?",
-                                       is_warning=True).get_input()
-
-                    if res:
-                        eliminados = 0
+                    if ModernDialog(self, "Setups antiguos detectados",
+                                    f"Se han encontrado {len(archivos_antiguos)} setups antiguos de {creador_detectado}.\n\n¿Deseas eliminarlos antes de descargar la nueva versión {info_version.strip()}?",
+                                    is_warning=True).get_input():
                         for arch in archivos_antiguos:
                             try:
                                 os.remove(arch)
-                                eliminados += 1
-                            except Exception:
+                            except:
                                 pass
-                        if eliminados > 0:
-                            self.log(f"🗑️ Se han eliminado {eliminados} setups antiguos.")
-                            self.actualizar_lista_circuitos()
+                        self.log(f"🗑️ Se han eliminado {len(archivos_antiguos)} setups antiguos.")
+                        self.actualizar_lista_circuitos()
 
                 if botones_a_descargar:
-                    for widget in self.frame_bot_pantalla.winfo_children():
-                        widget.destroy()
-
+                    for widget in self.frame_bot_pantalla.winfo_children(): widget.destroy()
                     lbl_descargando = ctk.CTkLabel(self.frame_bot_pantalla,
                                                    text=f"📥 Descargando {len(botones_a_descargar)} setups de {creador_detectado}{info_version}\n\nCircuito: {self.subcarpeta_circuito or 'Settings'}",
                                                    font=("Arial", 18, "bold"), text_color="#3498db")
                     lbl_descargando.pack(pady=(60, 10))
-
                     self.progressbar = ctk.CTkProgressBar(self.frame_bot_pantalla, width=400, height=15)
                     self.progressbar.pack(pady=20)
                     self.progressbar.set(0)
 
                     frame_nav = ctk.CTkFrame(self.frame_bot_pantalla, fg_color="transparent")
                     frame_nav.pack(pady=30)
-
                     for fila in botones_telegram:
                         for boton_tl in fila:
-                            texto_btn = boton_tl.text.lower()
-                            if "back" in texto_btn or "main menu" in texto_btn:
+                            if "back" in boton_tl.text.lower() or "main menu" in boton_tl.text.lower():
                                 def crear_comando(btn=boton_tl):
                                     async def click_seguro():
-                                        if getattr(self, 'descarga_en_curso', False):
-                                            self.log("⚠️ Descarga en proceso. Espera a que termine.")
-                                            return
-                                        self.ultimo_texto_menu = None
-                                        await asyncio.sleep(1.0)
+                                        if getattr(self, 'descarga_en_curso', False): return
+                                        self.ultimo_texto_menu = None;
+                                        await asyncio.sleep(1.0);
                                         await btn.click()
 
                                     return lambda: asyncio.run_coroutine_threadsafe(click_seguro(), self.loop)
 
-                                btn_ui = ctk.CTkButton(frame_nav, text=boton_tl.text, command=crear_comando(),
-                                                       width=150, height=40, corner_radius=8,
-                                                       fg_color="#4a4a4a", hover_color="#333333",
-                                                       font=("Arial", 13, "bold"))
-                                btn_ui.pack(side="left", padx=10)
+                                ctk.CTkButton(frame_nav, text=boton_tl.text, command=crear_comando(), width=150,
+                                              height=40, fg_color="#4a4a4a").pack(side="left", padx=10)
 
-                    self.log(
-                        f"¡Lote {creador_detectado} detectado! Descarga masiva iniciada en /{self.subcarpeta_circuito or 'Settings'}.")
+                    self.log(f"Descarga masiva iniciada en /{self.subcarpeta_circuito or 'Settings'}.")
 
                     async def auto_descarga():
                         self.descarga_en_curso = True
                         try:
                             total = len(botones_a_descargar)
                             for i, btn in enumerate(botones_a_descargar, 1):
-                                await btn.click()
+                                await btn.click();
                                 await asyncio.sleep(3.5)
                                 self.after(0, lambda v=i / total: self.progressbar.set(v))
-
-                            self.log("✓ Lote completado con éxito. Usa los botones de navegación.")
+                            self.log("✓ Lote completado con éxito.")
                             self.after(0, self.actualizar_lista_circuitos)
-
                             self.after(0, lambda: lbl_descargando.configure(
                                 text=f"✅ ¡Descarga completada!\n\nSe han guardado {len(botones_a_descargar)} setups de {creador_detectado}{info_version}",
                                 text_color="#2ecc71"))
@@ -943,112 +747,79 @@ class LMUApp(ctk.CTk):
 
                     asyncio.run_coroutine_threadsafe(auto_descarga(), self.loop)
 
-            if botones_a_descargar:
-                return
+            if botones_a_descargar: return
 
-        boton_get_setup = None
-        if botones_telegram:
-            for fila in botones_telegram:
-                for boton_tl in fila:
-                    if 'get a setup' in boton_tl.text.lower():
-                        boton_get_setup = boton_tl
-                        break
-
+        boton_get_setup = next(
+            (b for fila in (botones_telegram or []) for b in fila if 'get a setup' in b.text.lower()), None)
         if boton_get_setup:
-            async def auto_click_inicio():
-                await asyncio.sleep(1.5)
-                await boton_get_setup.click()
+            async def auto_click_inicio(): await asyncio.sleep(1.5); await boton_get_setup.click()
 
             asyncio.run_coroutine_threadsafe(auto_click_inicio(), self.loop)
             return
 
-        for widget in self.frame_bot_pantalla.winfo_children():
-            widget.destroy()
-
-        if "setups by" not in texto_limpio:
-            self.ultimo_texto_menu = None
-
+        for widget in self.frame_bot_pantalla.winfo_children(): widget.destroy()
+        if "setups by" not in texto_limpio: self.ultimo_texto_menu = None
         texto_mostrar = texto_mensaje.replace("**", "").replace("__", "").strip()
 
         match_step = re.search(r'(?i)step\s+(\d+)/(\d+)', texto_mostrar)
         if match_step:
-            paso_actual = int(match_step.group(1))
-            paso_total = int(match_step.group(2))
-
+            paso_actual, paso_total = int(match_step.group(1)), int(match_step.group(2))
             texto_mostrar = re.sub(r'(?i)step\s+\d+/\d+\.?\s*', '', texto_mostrar).strip()
-
-            lbl_step = ctk.CTkLabel(self.frame_bot_pantalla, text=f"📍 Paso {paso_actual} de {paso_total}",
-                                    font=("Arial", 16, "bold"), text_color="#f39c12")
-            lbl_step.pack(pady=(15, 5))
-
+            ctk.CTkLabel(self.frame_bot_pantalla, text=f"📍 Paso {paso_actual} de {paso_total}",
+                         font=("Arial", 16, "bold"), text_color="#f39c12").pack(pady=(15, 5))
             prog_nav = ctk.CTkProgressBar(self.frame_bot_pantalla, width=250, height=8, progress_color="#f39c12")
             prog_nav.pack(pady=(0, 15))
             prog_nav.set(paso_actual / paso_total)
 
         if texto_mostrar:
-            lbl_texto = ctk.CTkLabel(self.frame_bot_pantalla, text=texto_mostrar, justify="center", wraplength=500,
-                                     font=("Arial", 15))
-            lbl_texto.pack(pady=(5, 25))
+            ctk.CTkLabel(self.frame_bot_pantalla, text=texto_mostrar, justify="center", wraplength=500,
+                         font=("Arial", 15)).pack(pady=(5, 25))
 
         if botones_telegram:
             for fila in botones_telegram:
                 frame_fila = ctk.CTkFrame(self.frame_bot_pantalla, fg_color="transparent")
                 frame_fila.pack(pady=4)
                 for boton_tl in fila:
-                    texto_btn = boton_tl.text
+                    es_nav = "back" in boton_tl.text.lower() or "main menu" in boton_tl.text.lower()
 
-                    btn_color = "#1f538d"
-                    btn_hover = "#14375e"
-                    if "back" in texto_btn.lower() or "main menu" in texto_btn.lower():
-                        btn_color = "#4a4a4a"
-                        btn_hover = "#333333"
-
-                    def crear_comando(btn=boton_tl):
+                    def crear_comando(btn=boton_tl, is_nav=es_nav):
                         async def click_seguro():
-                            if getattr(self, 'descarga_en_curso', False):
-                                return
-                            if "back" in btn.text.lower() or "main menu" in btn.text.lower():
-                                self.ultimo_texto_menu = None
-                            await asyncio.sleep(1.5)
+                            if getattr(self, 'descarga_en_curso', False): return
+                            if is_nav: self.ultimo_texto_menu = None
+                            await asyncio.sleep(1.5);
                             await btn.click()
 
                         return lambda: asyncio.run_coroutine_threadsafe(click_seguro(), self.loop)
 
-                    btn_ui = ctk.CTkButton(frame_fila, text=texto_btn, command=crear_comando(),
-                                           width=220, height=40, corner_radius=8,
-                                           fg_color=btn_color, hover_color=btn_hover, font=("Arial", 13, "bold"))
-                    btn_ui.pack(side="left", padx=6)
+                    btn_color, btn_hover = ("#4a4a4a", "#333333") if es_nav else ("#1f538d", "#14375e")
+                    ctk.CTkButton(frame_fila, text=boton_tl.text, command=crear_comando(), width=220, height=40,
+                                  fg_color=btn_color, hover_color=btn_hover, font=("Arial", 13, "bold")).pack(
+                        side="left", padx=6)
 
     # --- EVENTOS DE TELEGRAM ---
     async def handler_mensajes(self, event):
         mensaje = event.message
-
         if mensaje.media and hasattr(mensaje, 'file') and mensaje.file:
             nombre = mensaje.file.name or "setup_desconocido.json"
-
             texto_archivo = mensaje.text or ""
-            coche_m = re.search(r'🏎️\s*([^\n]+)', texto_archivo)
-            circuito_m = re.search(r'📍\s*([^\n]+)', texto_archivo)
-            creador_m = re.search(r'👨‍🔧\s*([^\n]+)', texto_archivo)
-            ruta_m = re.search(r'Settings\\([^\\]+)\\', texto_archivo)
 
-            meta_coche = coche_m.group(1).strip() if coche_m else None
-            coche_limpio_bd = self.normalizar_coche(meta_coche) if meta_coche else self.normalizar_coche(nombre)
+            meta_coche = (re.search(r'🏎️\s*([^\n]+)', texto_archivo) or type('obj', (object,),
+                                                                             {'group': lambda self, x: None})()).group(
+                1)
+            meta_circuito = (re.search(r'📍\s*([^\n]+)', texto_archivo) or type('obj', (object,), {
+                'group': lambda self, x: None})()).group(1)
+            meta_creador = (re.search(r'👨‍🔧\s*([^\n]+)', texto_archivo) or type('obj', (object,), {
+                'group': lambda self, x: None})()).group(1)
+            meta_carpeta = (re.search(r'Settings\\([^\\]+)\\', texto_archivo) or type('obj', (object,), {
+                'group': lambda self, x: None})()).group(1)
 
-            meta_circuito = circuito_m.group(1).strip() if circuito_m else None
-            meta_creador = creador_m.group(1).strip() if creador_m else None
-            meta_carpeta = ruta_m.group(1).strip() if ruta_m else None
+            coche_limpio_bd = normalizar_coche_texto(meta_coche) if meta_coche else normalizar_coche_texto(nombre)
+            carpeta_final = meta_carpeta.strip() if meta_carpeta else self.subcarpeta_circuito
 
-            carpeta_final = meta_carpeta or self.subcarpeta_circuito
+            ruta_guardado = os.path.join(self.ruta_destino, carpeta_final) if carpeta_final else self.ruta_destino
+            if carpeta_final and not os.path.exists(ruta_guardado): return
 
-            ruta_guardado = self.ruta_destino
-            if carpeta_final:
-                ruta_guardado = os.path.join(self.ruta_destino, carpeta_final)
-                if not os.path.exists(ruta_guardado):
-                    return
-
-            ruta_archivo = os.path.join(ruta_guardado, nombre)
-            await event.download_media(file=ruta_archivo)
+            await event.download_media(file=os.path.join(ruta_guardado, nombre))
 
             if meta_coche or meta_creador:
                 meta_file = os.path.join(self.ruta_destino, "lmu_setups_db.json")
@@ -1062,10 +833,9 @@ class LMUApp(ctk.CTk):
 
                 db[nombre] = {
                     "coche": coche_limpio_bd,
-                    "circuito": meta_circuito or carpeta_final,
-                    "creador": meta_creador or self.extraer_creador_fallback(nombre)
+                    "circuito": meta_circuito.strip() if meta_circuito else carpeta_final,
+                    "creador": meta_creador.strip() if meta_creador else extraer_creador_fallback(nombre)
                 }
-
                 with open(meta_file, 'w', encoding='utf-8') as f:
                     json.dump(db, f, indent=4)
 
@@ -1074,9 +844,8 @@ class LMUApp(ctk.CTk):
                 self.after(0, self.actualizar_lista_circuitos)
             return
 
-        texto = mensaje.text or "[Mensaje sin texto]"
-        botones = mensaje.buttons if hasattr(mensaje, 'buttons') else None
-        self.after(0, lambda txt=texto, btns=botones: self.dibujar_interfaz_bot(txt, btns))
+        self.after(0, lambda txt=mensaje.text or "[Mensaje sin texto]",
+                             btns=getattr(mensaje, 'buttons', None): self.dibujar_interfaz_bot(txt, btns))
 
 
 if __name__ == "__main__":
